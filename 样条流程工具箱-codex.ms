@@ -1,5 +1,5 @@
 /*
-	样条流程工具箱 v3.4.0
+	样条流程工具箱 v3.5.4
 	适用于 3ds Max 2024 中文版
 	功能：稳定描摹 / 批量附加 / 炸开到对象 / 一键挤出 / 一键加壳 / 轴心居中 / 复制粘贴
 
@@ -49,7 +49,7 @@ fn saveToolboxDialogPos p =
 	true
 )
 
-rollout rolFixBlackFace "样条流程工具箱 v3.4.0" width:340 height:885
+rollout rolFixBlackFace "样条流程工具箱 v3.5.4" width:340 height:885
 (
 	group "顶部信息"
 	(
@@ -79,7 +79,7 @@ rollout rolFixBlackFace "样条流程工具箱 v3.4.0" width:340 height:885
 	(
 		spinner spnSimplifyTol "偏差容差(mm): " range:[0.001,10000,1.0] type:#float width:220 fieldwidth:70 align:#left
 		spinner spnWeldTol "焊接阈值(mm): " range:[0.0,10000,0.1] type:#float width:220 fieldwidth:70 align:#left
-		button btnSimplify "精简样条点" width:310 height:34 toolTip:"按容差删除冗余点，减少曲线点数"
+		button btnSimplify "精简样条点" width:310 height:34 toolTip:"RDP高速精简：曲线自动平滑 + 防毛刺"
 	)
 
 	group "体量生成"
@@ -237,49 +237,433 @@ rollout rolFixBlackFace "样条流程工具箱 v3.4.0" width:340 height:885
 		)
 	)
 
-	fn simplifySplineByTolerance shp splineIndex distTol weldTol maxPasses:20 =
+	fn countKeepBits keepArr maxCount =
 	(
-		local removed = 0
-		local isClosedSpline = isClosed shp splineIndex
-		if isClosedSpline and (numKnots shp splineIndex) < 4 then return 0
-		if (not isClosedSpline) and (numKnots shp splineIndex) < 3 then return 0
+		local c = 0
+		for i = 1 to maxCount do if keepArr[i] do c += 1
+		c
+	)
 
-		for pass = 1 to maxPasses do
+	fn max2 a b =
+	(
+		if a > b then a else b
+	)
+
+	fn rdpKeepOpenByTol pts distTol =
+	(
+		local n = pts.count
+		local keep = #{}
+		if n < 1 then return keep
+
+		keep[1] = true
+		if n > 1 then keep[n] = true
+		if n <= 2 then return keep
+
+		local stackS = #()
+		local stackE = #()
+		append stackS 1
+		append stackE n
+
+		while stackS.count > 0 do
 		(
-			local removedThisPass = 0
-			local kcAtStart = numKnots shp splineIndex
-			if isClosedSpline and kcAtStart < 4 then exit
-			if (not isClosedSpline) and kcAtStart < 3 then exit
+			local top = stackS.count
+			local s = stackS[top]
+			local e = stackE[top]
+			deleteItem stackS top
+			deleteItem stackE top
 
-			for k = kcAtStart to 1 by -1 do
+			if (e - s) > 1 then
 			(
-				local kc = numKnots shp splineIndex
-				if k > kc then continue
-				if isClosedSpline and kc < 4 then exit
-				if (not isClosedSpline) and kc < 3 then exit
-				if (not isClosedSpline) and (k == 1 or k == kc) then continue
+				local a = pts[s]
+				local b = pts[e]
+				local maxDist = -1.0
+				local maxI = 0
 
-				local prevK = if k == 1 then kc else (k - 1)
-				local nextK = if k == kc then 1 else (k + 1)
-
-				local pPrev = getKnotPoint shp splineIndex prevK
-				local pCurr = getKnotPoint shp splineIndex k
-				local pNext = getKnotPoint shp splineIndex nextK
-
-				local nearPrev = (distance pCurr pPrev) <= weldTol
-				local nearNext = (distance pCurr pNext) <= weldTol
-				local lineDist = pointToLineDistance pCurr pPrev pNext
-				local nearLine = lineDist <= distTol
-
-				if nearPrev or nearNext or nearLine then
+				for i = (s + 1) to (e - 1) do
 				(
-					deleteKnot shp splineIndex k
-					removed += 1
-					removedThisPass += 1
+					local d = pointToLineDistance pts[i] a b
+					if d > maxDist then
+					(
+						maxDist = d
+						maxI = i
+					)
+				)
+
+				if (maxI > 0) and (maxDist > distTol) then
+				(
+					keep[maxI] = true
+					append stackS s
+					append stackE maxI
+					append stackS maxI
+					append stackE e
 				)
 			)
+		)
+		keep
+	)
 
-			if removedThisPass == 0 then exit
+	fn preserveSharpCorners pts keepArr isClosedSpline angleLimitDeg =
+	(
+		local n = pts.count
+		if n < 3 then return keepArr
+
+		local dotLimit = cos angleLimitDeg
+		if isClosedSpline then
+		(
+			for i = 1 to n do
+			(
+				local prevI = if i == 1 then n else (i - 1)
+				local nextI = if i == n then 1 else (i + 1)
+				local v1 = pts[prevI] - pts[i]
+				local v2 = pts[nextI] - pts[i]
+
+				if ((length v1) > 0.000001) and ((length v2) > 0.000001) then
+				(
+					local d = dot (normalize v1) (normalize v2)
+					if d > dotLimit then keepArr[i] = true
+				)
+			)
+		)
+		else
+		(
+			for i = 2 to (n - 1) do
+			(
+				local v1 = pts[i - 1] - pts[i]
+				local v2 = pts[i + 1] - pts[i]
+
+				if ((length v1) > 0.000001) and ((length v2) > 0.000001) then
+				(
+					local d = dot (normalize v1) (normalize v2)
+					if d > dotLimit then keepArr[i] = true
+				)
+			)
+		)
+		keepArr
+	)
+
+	fn denoisePointsForRDP pts isClosedSpline distTol =
+	(
+		local n = pts.count
+		if n < 3 then return pts
+
+		local curr = #()
+		for i = 1 to n do append curr pts[i]
+
+		for pass = 1 to 2 do
+		(
+			local nextPts = #()
+			for i = 1 to n do
+			(
+				local p = curr[i]
+				if (not isClosedSpline) and (i == 1 or i == n) then
+				(
+					append nextPts p
+				)
+				else
+				(
+					local prevI = if i == 1 then n else (i - 1)
+					local nextI = if i == n then 1 else (i + 1)
+					local pPrev = curr[prevI]
+					local pNext = curr[nextI]
+					local v1 = pPrev - p
+					local v2 = pNext - p
+					local l1 = length v1
+					local l2 = length v2
+
+					if (l1 < 0.000001) or (l2 < 0.000001) then
+					(
+						append nextPts p
+					)
+					else
+					(
+						local d = dot (normalize v1) (normalize v2)
+						if d > -0.60 then
+						(
+							-- 拐角点保持不动
+							append nextPts p
+						)
+						else
+						(
+							local pNew = (pPrev + p * 2.0 + pNext) / 4.0
+							if (distance pNew p) <= (distTol * 1.5) then
+								append nextPts pNew
+							else
+								append nextPts p
+						)
+					)
+				)
+			)
+			curr = nextPts
+		)
+		curr
+	)
+
+	fn preserveCurveKnots shp splineIndex candidateIndices keepArr distTol weldTol =
+	(
+		local n = candidateIndices.count
+		local protectLen = max2 (distTol * 1.2) (weldTol * 8.0)
+
+		for i = 1 to n do
+		(
+			local k = candidateIndices[i]
+			local p = getKnotPoint shp splineIndex k
+			local inV = getInVec shp splineIndex k
+			local outV = getOutVec shp splineIndex k
+			local h1 = distance p inV
+			local h2 = distance p outV
+			local hMax = max2 h1 h2
+
+			if hMax >= protectLen then
+				keepArr[i] = true
+		)
+		keepArr
+	)
+
+	fn isCurveSplineByHandles shp splineIndex distTol weldTol =
+	(
+		local kc = numKnots shp splineIndex
+		local protectLen = max2 (distTol * 1.2) (weldTol * 8.0)
+
+		for k = 1 to kc do
+		(
+			local p = getKnotPoint shp splineIndex k
+			local inV = getInVec shp splineIndex k
+			local outV = getOutVec shp splineIndex k
+			local hMax = max2 (distance p inV) (distance p outV)
+			if hMax >= protectLen then return true
+		)
+		false
+	)
+
+	fn fixSplineAfterSimplify shp splineIndex preferSmooth:false =
+	(
+		local isClosedSpline = false
+		try(isClosedSpline = isClosed shp splineIndex) catch(isClosedSpline = false)
+
+		local kc = numKnots shp splineIndex
+		if kc < 2 then return false
+
+		if preferSmooth and (not isClosedSpline) and (kc == 2) then
+		(
+			local p1 = getKnotPoint shp splineIndex 1
+			local p2 = getKnotPoint shp splineIndex 2
+			local v = p2 - p1
+			local lenV = length v
+			if lenV > 0.000001 then
+			(
+				local dir = normalize v
+				local h = lenV * 0.3333
+				local in1 = p1 - dir * h
+				local out1 = p1 + dir * h
+				local in2 = p2 - dir * h
+				local out2 = p2 + dir * h
+
+				try(setKnotType shp splineIndex 1 #bezier) catch()
+				try(setKnotType shp splineIndex 2 #bezier) catch()
+				try(setInVec shp splineIndex 1 in1) catch()
+				try(setOutVec shp splineIndex 1 out1) catch()
+				try(setInVec shp splineIndex 2 in2) catch()
+				try(setOutVec shp splineIndex 2 out2) catch()
+				try(setSegType shp splineIndex 1 #curve) catch()
+			)
+			return true
+		)
+
+		for k = 1 to kc do
+		(
+			local p = getKnotPoint shp splineIndex k
+			local prevK = if k == 1 then (if isClosedSpline then kc else 1) else (k - 1)
+			local nextK = if k == kc then (if isClosedSpline then 1 else kc) else (k + 1)
+			local pPrev = getKnotPoint shp splineIndex prevK
+			local pNext = getKnotPoint shp splineIndex nextK
+
+			if (not isClosedSpline) and (k == 1 or k == kc) then
+			(
+				try(setKnotType shp splineIndex k #corner) catch()
+				try(setInVec shp splineIndex k p) catch()
+				try(setOutVec shp splineIndex k p) catch()
+			)
+			else
+			(
+				local v1 = pPrev - p
+				local v2 = pNext - p
+				local l1 = length v1
+				local l2 = length v2
+
+				if (l1 < 0.000001) or (l2 < 0.000001) then
+				(
+					try(setKnotType shp splineIndex k #corner) catch()
+					try(setInVec shp splineIndex k p) catch()
+					try(setOutVec shp splineIndex k p) catch()
+				)
+				else
+				(
+					local d = dot (normalize v1) (normalize v2)
+					local cornerLimit = if preferSmooth then -0.35 else -0.75
+					if d > cornerLimit then
+					(
+						-- 拐角保持直线，避免过冲
+						try(setKnotType shp splineIndex k #corner) catch()
+						try(setInVec shp splineIndex k p) catch()
+						try(setOutVec shp splineIndex k p) catch()
+					)
+					else
+					(
+						local tan = pNext - pPrev
+						if (length tan) < 0.000001 then
+						(
+							try(setKnotType shp splineIndex k #corner) catch()
+							try(setInVec shp splineIndex k p) catch()
+							try(setOutVec shp splineIndex k p) catch()
+						)
+						else
+						(
+							local dir = normalize tan
+							local minLen = if l1 < l2 then l1 else l2
+							local handleLen = minLen * 0.25
+							local inV = p - dir * handleLen
+							local outV = p + dir * handleLen
+
+							try(setKnotType shp splineIndex k #smooth) catch()
+							try(setInVec shp splineIndex k inV) catch()
+							try(setOutVec shp splineIndex k outV) catch()
+						)
+					)
+				)
+			)
+		)
+		true
+	)
+
+	fn simplifySplineByTolerance shp splineIndex distTol weldTol maxPasses:20 =
+	(
+		local isClosedSpline = isClosed shp splineIndex
+		local kc = numKnots shp splineIndex
+		local curveHint = isCurveSplineByHandles shp splineIndex distTol weldTol
+		if isClosedSpline and kc < 4 then return 0
+		if (not isClosedSpline) and kc < 3 then return 0
+
+		local candidateIndices = #()
+		append candidateIndices 1
+		local lastKeepPos = getKnotPoint shp splineIndex 1
+
+		for k = 2 to kc do
+		(
+			local p = getKnotPoint shp splineIndex k
+			if (distance p lastKeepPos) > weldTol then
+			(
+				append candidateIndices k
+				lastKeepPos = p
+			)
+		)
+
+		if not isClosedSpline then
+		(
+			if candidateIndices[candidateIndices.count] != kc then append candidateIndices kc
+		)
+		else
+		(
+			if candidateIndices.count > 2 then
+			(
+				local pFirst = getKnotPoint shp splineIndex candidateIndices[1]
+				local pLast = getKnotPoint shp splineIndex candidateIndices[candidateIndices.count]
+				if (distance pFirst pLast) <= weldTol then deleteItem candidateIndices candidateIndices.count
+			)
+		)
+
+		local cn = candidateIndices.count
+		if isClosedSpline and cn < 3 then return 0
+		if (not isClosedSpline) and cn < 2 then return 0
+
+		local pts = #()
+		for i = 1 to cn do append pts (getKnotPoint shp splineIndex candidateIndices[i])
+		local evalPts = denoisePointsForRDP pts isClosedSpline distTol
+
+		local keepCandidate = #{}
+		if isClosedSpline then
+		(
+			local ptsOpen = #()
+			for i = 1 to cn do append ptsOpen evalPts[i]
+			append ptsOpen evalPts[1]
+			local keepOpen = rdpKeepOpenByTol ptsOpen distTol
+			for i = 1 to cn do if keepOpen[i] do keepCandidate[i] = true
+		)
+		else
+		(
+			keepCandidate = rdpKeepOpenByTol evalPts distTol
+		)
+
+		keepCandidate = preserveSharpCorners pts keepCandidate isClosedSpline 120.0
+		keepCandidate = preserveCurveKnots shp splineIndex candidateIndices keepCandidate distTol weldTol
+
+		if isClosedSpline then
+		(
+			if (countKeepBits keepCandidate cn) < 3 then
+			(
+				local i2 = (cn / 2) as integer
+				if i2 < 1 then i2 = 1
+				if i2 > cn then i2 = cn
+				keepCandidate[1] = true
+				keepCandidate[i2] = true
+				keepCandidate[cn] = true
+			)
+
+			if curveHint and cn >= 4 and (countKeepBits keepCandidate cn) < 4 then
+			(
+				local i2 = (cn / 3) as integer
+				local i3 = ((cn * 2) / 3) as integer
+				if i2 < 2 then i2 = 2
+				if i3 < 3 then i3 = 3
+				if i2 > (cn - 1) then i2 = (cn - 1)
+				if i3 > (cn - 1) then i3 = (cn - 1)
+				keepCandidate[1] = true
+				keepCandidate[i2] = true
+				keepCandidate[i3] = true
+				keepCandidate[cn] = true
+			)
+		)
+		else
+		(
+			keepCandidate[1] = true
+			keepCandidate[cn] = true
+
+			if curveHint and cn >= 3 and (countKeepBits keepCandidate cn) < 3 then
+			(
+				local midI = (cn / 2) as integer
+				if midI < 2 then midI = 2
+				if midI > (cn - 1) then midI = (cn - 1)
+				keepCandidate[midI] = true
+			)
+		)
+
+		local keepOriginal = #{}
+		for i = 1 to cn do
+		(
+			if keepCandidate[i] do keepOriginal[candidateIndices[i]] = true
+		)
+
+		if not isClosedSpline then
+		(
+			keepOriginal[1] = true
+			keepOriginal[kc] = true
+		)
+
+		local minNeeded = if isClosedSpline then (if curveHint then 4 else 3) else (if curveHint then 3 else 2)
+		if (countKeepBits keepOriginal kc) < minNeeded then return 0
+
+		local removed = 0
+		for k = kc to 1 by -1 do
+		(
+			if not keepOriginal[k] then
+			(
+				deleteKnot shp splineIndex k
+				removed += 1
+			)
+		)
+
+		if removed > 0 do
+		(
+			try(fixSplineAfterSimplify shp splineIndex preferSmooth:curveHint) catch()
 		)
 		removed
 	)
@@ -627,7 +1011,6 @@ rollout rolFixBlackFace "样条流程工具箱 v3.4.0" width:340 height:885
 				if superClassOf obj == Shape then
 				(
 					convertToSplineShape obj
-					weldSpline obj weldTol
 
 					local localRemoved = 0
 					for s = 1 to (numSplines obj) do
@@ -646,7 +1029,7 @@ rollout rolFixBlackFace "样条流程工具箱 v3.4.0" width:340 height:885
 
 		updateSelInfo()
 		if objCount > 0 then
-			updateInfo ("精简完成：对象 " + objCount as string + "，删除点 " + removedCount as string + (if skipCount > 0 then ("，跳过 " + skipCount as string) else ""))
+			updateInfo ("RDP精简完成：对象 " + objCount as string + "，删除点 " + removedCount as string + (if skipCount > 0 then ("，跳过 " + skipCount as string) else ""))
 		else
 			updateInfo "未找到样条线对象"
 	)

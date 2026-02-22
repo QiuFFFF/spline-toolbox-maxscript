@@ -1,7 +1,7 @@
 /*
-	样条流程工具箱 v3.5.4
+	样条流程工具箱 v3.6.9
 	适用于 3ds Max 2024 中文版
-	功能：稳定描摹 / 批量附加 / 炸开到对象 / 一键挤出 / 一键加壳 / 轴心居中 / 复制粘贴
+	功能：稳定描摹 / 批量附加 / 炸开到对象 / 分离到对象 / 一键挤出(可封口) / 挤出后ProOptimize / 一键加壳(内外厚度) / 轴心居中 / 复制粘贴 / 材质批处理 / 旋转靠齐轴
 
 	安装方法：
 	1. 将此文件拖入 3ds Max 视口即可运行
@@ -13,6 +13,7 @@ callbacks.removeScripts id:#fixBlackFaceSelChanged
 
 global splineToolboxScriptPath = undefined
 global splineToolboxUIIniPath = undefined
+global splineToolboxMatBackup = #()
 try(splineToolboxScriptPath = getSourceFileName()) catch()
 try(splineToolboxUIIniPath = pathConfig.appendPath (getDir #plugcfg) "spline_toolbox_ui.ini") catch()
 
@@ -49,79 +50,107 @@ fn saveToolboxDialogPos p =
 	true
 )
 
-rollout rolFixBlackFace "样条流程工具箱 v3.5.4" width:340 height:885
+rollout rolFixBlackFace "样条流程工具箱 v3.6.9" width:664 height:850
 (
-	group "顶部信息"
-	(
-		label lbSelectTitle "选择信息：先选中对象，再点击对应功能" align:#left width:310
-		label lbSelInfo "" align:#left width:310
-		label lbSelStats "" align:#left width:310
-		label lbInfo "程序信息：就绪" align:#left width:310 height:18
-	)
+	label lbSecTopL "顶部信息" pos:[16,10] align:#left width:300
+	label lbSelectTitle "选择信息：先选中对象，再点击对应功能" pos:[16,30] align:#left width:300
+	label lbSelInfo "" pos:[16,50] align:#left width:300
+	label lbSelStats "" pos:[16,70] align:#left width:300
+	label lbSelMat "材质：-" pos:[16,90] align:#left width:300 height:16
+	label lbInfo "程序信息：就绪" pos:[16,106] align:#left width:300 height:18
 
-	timer tmrClock interval:1000 active:false
+	label lbSecTrace "描摹重建" pos:[16,120] align:#left width:300
+	label lbTrace "用于黑面修复的稳定点描流程（支持多选）" pos:[16,140] align:#left width:300
+	button btnTrace "描摹样条线" pos:[16,168] width:300 height:32 toolTip:"保留曲线切线的重建样条"
+	checkbox chkTraceAutoSimplify "描摹时自动精简点" pos:[16,206] checked:false
+	checkbox chkDeleteOrig "描摹后删除原物体" pos:[166,206] checked:true
+	checkbox chkTraceCenterPivot "描摹后重置轴(居中对象)" pos:[16,228] checked:true
 
-	group "描摹重建"
-	(
-		label lbTrace "用于黑面修复的稳定点描流程（支持多选）" align:#left width:310
-		button btnTrace "描摹样条线" width:310 height:34 toolTip:"保留曲线切线的重建样条"
-		checkbox chkTraceAutoSimplify "描摹时自动精简点" checked:false
-		checkbox chkDeleteOrig "描摹后删除原物体" checked:true
-	)
+	label lbSecSpline "样条处理" pos:[16,258] align:#left width:300
+	button btnAttach "批量附加" pos:[16,278] width:300 height:32 toolTip:"将多个样条线合并为一个对象"
+	button btnExplode "炸开到对象" pos:[16,314] width:300 height:32 toolTip:"将每条子样条线分离为独立对象"
+	button btnDetachToObj "分离到对象" pos:[16,350] width:300 height:32 toolTip:"将几何体按元素分离为独立对象"
 
-	group "样条处理"
-	(
-		button btnAttach "批量附加" width:310 height:34 toolTip:"将多个样条线合并为一个对象"
-		button btnExplode "炸开到对象" width:310 height:34 toolTip:"将每条子样条线分离为独立对象"
-	)
+	label lbSecSimplify "点数优化" pos:[16,392] align:#left width:300
+	spinner spnSimplifyTol "偏差容差(mm): " pos:[16,412] range:[0.001,10000,1.0] type:#float width:210 fieldwidth:70 align:#left
+	spinner spnWeldTol "焊接阈值(mm): " pos:[16,442] range:[0.0,10000,0.1] type:#float width:210 fieldwidth:70 align:#left
+	button btnSimplify "精简样条点" pos:[16,472] width:300 height:32 toolTip:"RDP高速精简：曲线自动平滑 + 防毛刺"
+	button btnSnapKnotAxis "点吸附到最近样条线" pos:[16,508] width:300 height:32 toolTip:"仅处理已选中的样条点，吸附到最近真实样条段（含曲线）"
 
-	group "点数优化"
-	(
-		spinner spnSimplifyTol "偏差容差(mm): " range:[0.001,10000,1.0] type:#float width:220 fieldwidth:70 align:#left
-		spinner spnWeldTol "焊接阈值(mm): " range:[0.0,10000,0.1] type:#float width:220 fieldwidth:70 align:#left
-		button btnSimplify "精简样条点" width:310 height:34 toolTip:"RDP高速精简：曲线自动平滑 + 防毛刺"
-	)
+	label lbSecVolume "体量生成" pos:[346,10] align:#left width:300
+	spinner spnExtrude "挤出高度: " pos:[346,30] range:[-99999,99999,10] type:#float width:210 fieldwidth:70 align:#left
+	checkbox chkExtrudeCap "挤出封口" pos:[346,60] checked:true
+	button btnExtrude "一键挤出" pos:[346,86] width:300 height:32 toolTip:"为样条线添加 Extrude"
+	checkbox chkExtrudeProOptimize "挤出后自动 ProOptimize" pos:[346,122] checked:false
+	spinner spnExtrudeProPercent "目标百分比(%): " pos:[346,152] range:[1,100,60] type:#integer width:210 fieldwidth:70 align:#left enabled:false
+	spinner spnShellOuter "外壳厚度: " pos:[346,182] range:[0.0,99999,2] type:#float width:210 fieldwidth:70 align:#left
+	spinner spnShellInner "内壳厚度: " pos:[346,212] range:[0.0,99999,0] type:#float width:210 fieldwidth:70 align:#left
+	button btnShell "一键加壳" pos:[346,242] width:300 height:32 toolTip:"为对象添加 Shell（支持内壳/外壳厚度）"
 
-	group "体量生成"
-	(
-		spinner spnExtrude "挤出高度: " range:[-99999,99999,10] type:#float width:220 fieldwidth:70 align:#left
-		button btnExtrude "一键挤出" width:310 height:34 toolTip:"为样条线添加 Extrude"
-		spinner spnShell "加壳厚度: " range:[0.001,99999,2] type:#float width:220 fieldwidth:70 align:#left
-		button btnShell "一键加壳" width:310 height:34 toolTip:"为对象添加 Shell"
-	)
+	label lbSecPivot "轴心与复制" pos:[346,286] align:#left width:300
+	button btnCenterPivot "重置轴-仅影响轴-居中到对象" pos:[346,306] width:300 height:32 toolTip:"将当前选中物体的轴心居中到对象"
+	button btnCopyNodes "复制" pos:[346,342] width:146 height:32
+	button btnPasteNodes "粘贴" pos:[500,342] width:146 height:32
 
-	group "轴心与复制"
-	(
-		button btnCenterPivot "重置轴-仅影响轴-居中到对象" width:310 height:34 toolTip:"将当前选中物体的轴心居中到对象"
-		button btnCopyNodes "复制" width:150 height:34 across:2
-		button btnPasteNodes "粘贴" width:150 height:34
-	)
+	label lbSecAlignRot "旋转靠齐轴" pos:[346,386] align:#left width:300
+	checkbox chkRotUseX "启用X" pos:[346,406] checked:false
+	spinner spnRotX "X角度: " pos:[346,426] range:[-360000,360000,0] type:#float width:210 fieldwidth:70 align:#left
+	checkbox chkRotUseY "启用Y" pos:[346,456] checked:false
+	spinner spnRotY "Y角度: " pos:[346,476] range:[-360000,360000,0] type:#float width:210 fieldwidth:70 align:#left
+	checkbox chkRotUseZ "启用Z" pos:[346,506] checked:true
+	spinner spnRotZ "Z角度: " pos:[346,526] range:[-360000,360000,0] type:#float width:210 fieldwidth:70 align:#left
+	button btnAlignRotAxis "旋转靠齐轴" pos:[500,506] width:146 height:52 toolTip:"按输入角度将当前选择对齐到世界XYZ旋转"
 
-	group "显示与冻结"
-	(
-		button btnFreezeSel "冻结当前选择" width:150 height:34 across:2
-		button btnUnfreezeAll "全部取消冻结" width:150 height:34
-		button btnHideSel "隐藏当前选择" width:150 height:34 across:2
-		button btnUnhideAll "全部取消隐藏" width:150 height:34
-	)
+	label lbSecFreezeHide "显示与冻结" pos:[346,566] align:#left width:300
+	button btnFreezeSel "冻结当前选择" pos:[346,586] width:146 height:32
+	button btnUnfreezeAll "全部取消冻结" pos:[500,586] width:146 height:32
+	button btnHideSel "隐藏当前选择" pos:[346,622] width:146 height:32
+	button btnUnhideAll "全部取消隐藏" pos:[500,622] width:146 height:32
 
-	group "插件维护"
-	(
-		button btnReloadTool "重载插件" width:310 height:34 toolTip:"重新载入当前工具脚本"
-	)
+	label lbSecMaterial "材质批处理" pos:[346,666] align:#left width:300
+	checkbox chkMatCustomName "自定义命名" pos:[346,686] checked:false
+	editText edtMatCustomName "" pos:[430,684] width:216 height:20 enabled:false
+	button btnUnifyMat "统一材质" pos:[346,712] width:146 height:32 toolTip:"将当前选中几何体统一为一个新的独立材质"
+	button btnRestoreMat "还原材质" pos:[500,712] width:146 height:32 toolTip:"还原上一次统一材质前的原始材质"
+	button btnSelectSameMat "选择同材质" pos:[346,748] width:300 height:32 toolTip:"按当前第一个选中物体材质，批量选中同材质几何体"
 
-	dotNetControl dnClock "System.Windows.Forms.Label" width:310 height:36
+	label lbSecMaintain "插件维护" pos:[346,792] align:#left width:300
+	button btnReloadTool "重载插件" pos:[346,812] width:300 height:32 toolTip:"重新载入当前工具脚本"
 
 	fn updateInfo msg =
 	(
 		lbInfo.text = "程序信息：" + msg
 	)
 
-	fn updateClock =
+	fn buildSelMaterialInfoText =
 	(
-		local nowText = ""
-		try(nowText = ((dotNetClass "System.DateTime").Now.ToString "yyyy-MM-dd HH:mm:ss")) catch(nowText = localTime as string)
-		dnClock.text = nowText
+		if selection.count < 1 then return "材质：-"
+
+		local names = #()
+		for obj in selection do
+		(
+			if not isValidNode obj then continue
+
+			local mat = undefined
+			try(mat = obj.material) catch(mat = undefined)
+			local matName = if mat == undefined then "<无材质>" else mat.name
+
+			local exists = false
+			for n in names do
+			(
+				if n == matName then
+				(
+					exists = true
+					exit
+				)
+			)
+			if not exists do append names matName
+		)
+
+		if names.count < 1 then return "材质：-"
+		if names.count == 1 then return ("材质：" + names[1])
+		if names.count == 2 then return ("材质：" + names[1] + " / " + names[2])
+		("材质：" + names[1] + " 等 " + names.count as string + " 种")
 	)
 
 	fn updateSelInfo =
@@ -137,24 +166,47 @@ rollout rolFixBlackFace "样条流程工具箱 v3.5.4" width:340 height:885
 
 			if superClassOf obj == Shape then
 			(
-				local splineCount = numSplines obj
-				for s = 1 to splineCount do
-				(
-					local knotCount = numKnots obj s
-					pointCount += knotCount
+				local shapeOK = true
+				local splineCount = 0
+				try(splineCount = numSplines obj) catch(shapeOK = false)
 
-					local segCount = 0
-					try(segCount = numSegments obj s) catch(segCount = 0)
-					if segCount == 0 then
+				if shapeOK and splineCount > 0 then
+				(
+					for s = 1 to splineCount do
 					(
-						if isClosed obj s then
-							segCount = knotCount
-						else if knotCount > 0 then
-							segCount = knotCount - 1
-						else
-							segCount = 0
+						local knotCount = 0
+						try(knotCount = numKnots obj s) catch(knotCount = 0)
+						pointCount += knotCount
+
+						local segCount = 0
+						try(segCount = numSegments obj s) catch(segCount = 0)
+						if segCount == 0 then
+						(
+							local closedSeg = false
+							try(closedSeg = isClosed obj s) catch(closedSeg = false)
+							if closedSeg then
+								segCount = knotCount
+							else if knotCount > 0 then
+								segCount = knotCount - 1
+							else
+								segCount = 0
+						)
+						lineCount += segCount
 					)
-					lineCount += segCount
+				)
+				else
+				(
+					local msh = undefined
+					try(msh = snapshotAsMesh obj) catch(msh = undefined)
+					if msh != undefined then
+					(
+						pointCount += msh.numVerts
+						faceCount += msh.numFaces
+						local edgeCount = 0
+						try(edgeCount = meshop.getNumEdges msh) catch(edgeCount = 0)
+						lineCount += edgeCount
+						free msh
+					)
 				)
 			)
 			else
@@ -175,12 +227,64 @@ rollout rolFixBlackFace "样条流程工具箱 v3.5.4" width:340 height:885
 
 		lbSelInfo.text = "当前选择：" + selCount as string + " 个物体"
 		lbSelStats.text = "点: " + pointCount as string + "  线: " + lineCount as string + "  面: " + faceCount as string
+		lbSelMat.text = buildSelMaterialInfoText()
 	)
 
 	fn getCopyPasteFile =
 	(
 		local copyDir = getDir #autoback
 		pathConfig.appendPath copyDir "pastefile.max"
+	)
+
+	fn getSelectedGeometryTargets =
+	(
+		for obj in selection where isValidNode obj and (superClassOf obj == GeometryClass) collect obj
+	)
+
+	fn createUniqueTagMaterial customName:"" =
+	(
+		local matName = ""
+		if (customName != undefined) and (customName != "") then
+		(
+			matName = uniqueName customName
+		)
+		else
+		(
+			local stamp = "000000"
+			try(stamp = ((dotNetClass "System.DateTime").Now.ToString "yyyyMMdd_HHmmss")) catch(stamp = (random 100000 999999 as string))
+			matName = uniqueName ("STB_TAG_" + stamp + "_")
+		)
+
+		local m = undefined
+		try(m = standard name:matName diffuse:(color 180 180 180)) catch(m = undefined)
+
+		if m == undefined then
+		(
+			try(m = standard()) catch(m = undefined)
+			if m != undefined then
+			(
+				try(m.name = matName) catch()
+				try(m.diffuse = (color 180 180 180)) catch()
+			)
+		)
+
+		m
+	)
+
+	fn alignNodeRotationByAxes obj useX useY useZ xVal yVal zVal =
+	(
+		local eul = eulerAngles 0 0 0
+		in coordsys world
+		(
+			try(eul = obj.rotation as eulerAngles) catch(eul = eulerAngles 0 0 0)
+		)
+
+		if useX then eul.x = xVal
+		if useY then eul.y = yVal
+		if useZ then eul.z = zVal
+
+		in coordsys world (obj.rotation = eul)
+		true
 	)
 
 	fn reloadToolSelf =
@@ -247,6 +351,99 @@ rollout rolFixBlackFace "样条流程工具箱 v3.5.4" width:340 height:885
 	fn max2 a b =
 	(
 		if a > b then a else b
+	)
+
+	fn closestPointOnSegment p a b =
+	(
+		local ab = b - a
+		local lenSq = dot ab ab
+		if lenSq < 0.0000000001 then
+		(
+			#(a, distance p a, 0.0)
+		)
+		else
+		(
+			local t = (dot (p - a) ab) / lenSq
+			if t < 0.0 then t = 0.0
+			if t > 1.0 then t = 1.0
+			local proj = a + ab * t
+			#(proj, distance p proj, t)
+		)
+	)
+
+	fn bezierPoint3 p0 p1 p2 p3 t =
+	(
+		local u = 1.0 - t
+		local uu = u * u
+		local tt = t * t
+		(p0 * (uu * u)) + (p1 * (3.0 * uu * t)) + (p2 * (3.0 * u * tt)) + (p3 * (tt * t))
+	)
+
+	fn closestPointOnBezierApprox p p0 p1 p2 p3 sampleCount:24 refinePasses:5 =
+	(
+		local bestT = 0.0
+		local bestPoint = p0
+		local bestDist = distance p p0
+
+		local coarseN = if sampleCount < 4 then 4 else sampleCount
+		for i = 0 to coarseN do
+		(
+			local t = (i as float) / (coarseN as float)
+			local q = bezierPoint3 p0 p1 p2 p3 t
+			local d = distance p q
+			if d < bestDist then
+			(
+				bestDist = d
+				bestPoint = q
+				bestT = t
+			)
+		)
+
+		local win = 1.0 / (coarseN as float)
+		for pass = 1 to refinePasses do
+		(
+			local t0 = bestT - win
+			local t1 = bestT + win
+			if t0 < 0.0 then t0 = 0.0
+			if t1 > 1.0 then t1 = 1.0
+
+			local localN = 8
+			for j = 0 to localN do
+			(
+				local t = t0 + (t1 - t0) * ((j as float) / (localN as float))
+				local q = bezierPoint3 p0 p1 p2 p3 t
+				local d = distance p q
+				if d < bestDist then
+				(
+					bestDist = d
+					bestPoint = q
+					bestT = t
+				)
+			)
+			win *= 0.35
+		)
+
+		#(bestPoint, bestDist, bestT)
+	)
+
+	fn collectPolyElementsByFaces polyObj =
+	(
+		local elements = #()
+		local faceCount = polyop.getNumFaces polyObj
+		if faceCount < 1 then return elements
+
+		local remain = #{1..faceCount}
+		while remain.numberSet > 0 do
+		(
+			local seed = remain[1]
+			local elemFaces = polyop.getElementsUsingFace polyObj #{seed}
+			if (elemFaces == undefined) or (elemFaces.numberSet < 1) then
+				elemFaces = #{seed}
+
+			append elements elemFaces
+			remain -= elemFaces
+		)
+		elements
 	)
 
 	fn rdpKeepOpenByTol pts distTol =
@@ -753,6 +950,7 @@ rollout rolFixBlackFace "样条流程工具箱 v3.5.4" width:340 height:885
 		local tracedObjs = #()
 		local skipCount = 0
 		local failCount = 0
+		local pivotCount = 0
 
 		undo "描摹样条线(批量)" on
 		(
@@ -876,6 +1074,10 @@ rollout rolFixBlackFace "样条流程工具箱 v3.5.4" width:340 height:885
 					if newShape != undefined and isValidNode newShape then
 					(
 						newShape.isHidden = false
+						if chkTraceCenterPivot.checked then
+						(
+							try(CenterPivot newShape; pivotCount += 1) catch()
+						)
 						append tracedObjs newShape
 						if chkDeleteOrig.checked and isValidNode obj then delete obj
 					)
@@ -898,7 +1100,7 @@ rollout rolFixBlackFace "样条流程工具箱 v3.5.4" width:340 height:885
 
 		updateSelInfo()
 		if tracedObjs.count > 0 then
-			updateInfo ("描摹完成：成功 " + tracedObjs.count as string + "，跳过 " + skipCount as string + "，失败 " + failCount as string)
+			updateInfo ("描摹完成：成功 " + tracedObjs.count as string + "，重置轴 " + pivotCount as string + "，跳过 " + skipCount as string + "，失败 " + failCount as string)
 		else
 			updateInfo ("未完成描摹：跳过 " + skipCount as string + "，失败 " + failCount as string)
 	)
@@ -990,6 +1192,77 @@ rollout rolFixBlackFace "样条流程工具箱 v3.5.4" width:340 height:885
 			updateInfo "未找到可炸开的样条线对象"
 	)
 
+	on btnDetachToObj pressed do
+	(
+		if selection.count == 0 then
+		(
+			messageBox "请先选择至少 1 个几何体对象！" title:"提示"
+			return undefined
+		)
+
+		local srcObjs = selection as array
+		local newObjs = #()
+		local objCount = 0
+		local totalElems = 0
+		local skipCount = 0
+
+		undo "分离到对象" on
+		(
+			for obj in srcObjs do
+			(
+				if (isValidNode obj) and (superClassOf obj == GeometryClass) then
+				(
+					convertToPoly obj
+					local elements = collectPolyElementsByFaces obj
+					local elemCount = elements.count
+
+					if elemCount > 0 then
+					(
+						local srcFaceCount = polyop.getNumFaces obj
+						totalElems += elemCount
+
+						for i = 2 to elemCount do
+						(
+							local partObj = copy obj
+							local keepFaces = elements[i]
+							local allFaces = #{1..(polyop.getNumFaces partObj)}
+							local delFaces = allFaces - keepFaces
+							if delFaces.numberSet > 0 then polyop.deleteFaces partObj delFaces
+							try(polyop.deleteIsoVerts partObj) catch()
+							partObj.name = uniqueName (obj.name + "_分离")
+							append newObjs partObj
+						)
+
+						local keepFirst = elements[1]
+						local allSrcFaces = #{1..srcFaceCount}
+						local delSrcFaces = allSrcFaces - keepFirst
+						if delSrcFaces.numberSet > 0 then polyop.deleteFaces obj delSrcFaces
+						try(polyop.deleteIsoVerts obj) catch()
+
+						objCount += 1
+					)
+					else
+					(
+						skipCount += 1
+					)
+				)
+				else
+				(
+					skipCount += 1
+				)
+			)
+		)
+
+		local validSrc = for o in srcObjs where isValidNode o and superClassOf o == GeometryClass collect o
+		if (validSrc.count + newObjs.count) > 0 then select (validSrc + newObjs)
+
+		updateSelInfo()
+		if objCount > 0 then
+			updateInfo ("分离完成：对象 " + objCount as string + "，分离后共 " + totalElems as string + " 个")
+		else
+			updateInfo ("未找到可分离的几何体对象" + (if skipCount > 0 then ("（跳过 " + skipCount as string + "）") else ""))
+	)
+
 	on btnSimplify pressed do
 	(
 		if selection.count == 0 then
@@ -1034,6 +1307,170 @@ rollout rolFixBlackFace "样条流程工具箱 v3.5.4" width:340 height:885
 			updateInfo "未找到样条线对象"
 	)
 
+	on btnSnapKnotAxis pressed do
+	(
+		if selection.count == 0 then
+		(
+			messageBox "请先选择样条线对象并进入点级别，再选中点！" title:"提示"
+			return undefined
+		)
+
+		if subObjectLevel != 1 then
+		(
+			messageBox "请先进入样条线“点”子对象级别（Vertex），并选中点后再执行。" title:"提示"
+			return undefined
+		)
+
+		local movedCount = 0
+		local objCount = 0
+		local skipCount = 0
+
+		undo "点吸附到最近样条线" on
+		(
+			local candidateSegs = #()
+			for src in selection do
+			(
+				if (isValidNode src) and (superClassOf src == Shape) then
+				(
+					for s2 = 1 to (numSplines src) do
+					(
+						local knotCount2 = numKnots src s2
+						if knotCount2 < 2 then continue
+
+						local closed2 = false
+						try(closed2 = isClosed src s2) catch(closed2 = false)
+						local segCount2 = if closed2 then knotCount2 else (knotCount2 - 1)
+						if segCount2 < 1 then continue
+
+						for segStart = 1 to segCount2 do
+						(
+							local segEnd = if segStart < knotCount2 then (segStart + 1) else 1
+							local p0 = in coordsys world (getKnotPoint src s2 segStart)
+							local p3 = in coordsys world (getKnotPoint src s2 segEnd)
+							local segType = #line
+							try(segType = getSegType src s2 segStart) catch(segType = #line)
+							local isCurveSeg = (segType == #curve)
+							local p1 = p0
+							local p2 = p3
+							if isCurveSeg then
+							(
+								p1 = in coordsys world (getOutVec src s2 segStart)
+								p2 = in coordsys world (getInVec src s2 segEnd)
+							)
+							append candidateSegs #(src, s2, segStart, segEnd, isCurveSeg, p0, p1, p2, p3)
+						)
+					)
+				)
+			)
+
+			for obj in selection do
+			(
+				if (isValidNode obj) and (superClassOf obj == Shape) then
+				(
+					local localMoved = 0
+
+					for s = 1 to (numSplines obj) do
+					(
+						local knotSel = undefined
+						local knotIndices = #()
+						try(knotSel = getKnotSelection obj s) catch(knotSel = undefined)
+
+						if knotSel != undefined then
+						(
+							if (classOf knotSel == BitArray) then
+							(
+								if knotSel.numberSet > 0 do
+								(
+									for k in knotSel do append knotIndices k
+								)
+							)
+							else if (classOf knotSel == Array) then
+							(
+								if knotSel.count > 0 do knotIndices = knotSel
+							)
+						)
+
+						if knotIndices.count > 0 then
+						(
+							for k in knotIndices do
+							(
+								local pWorld = in coordsys world (getKnotPoint obj s k)
+								local bestDist = 1e30
+								local bestPoint = undefined
+								local segAllCount = candidateSegs.count
+
+								for segI = 1 to segAllCount do
+								(
+									local seg = candidateSegs[segI]
+									local segNode = seg[1]
+									local segSpline = seg[2]
+									local segStart = seg[3]
+									local segEnd = seg[4]
+									local isCurveSeg = seg[5]
+									local p0 = seg[6]
+									local p1 = seg[7]
+									local p2 = seg[8]
+									local p3 = seg[9]
+
+									local skipSeg = false
+
+									-- 跳过包含当前点本身的线段，避免总是零距离吸附回自己
+									if (segNode == obj) and (segSpline == s) then
+									(
+										if segStart == k then skipSeg = true
+										if segEnd == k then skipSeg = true
+									)
+
+									if not skipSeg then
+									(
+										local hit = if isCurveSeg then
+											(closestPointOnBezierApprox pWorld p0 p1 p2 p3)
+										else
+											(closestPointOnSegment pWorld p0 p3)
+										local d = hit[2]
+
+										if d < bestDist then
+										(
+											bestDist = d
+											bestPoint = hit[1]
+										)
+									)
+								)
+
+								if bestPoint != undefined and bestDist < 1e29 then
+								(
+									in coordsys world (setKnotPoint obj s k bestPoint)
+									localMoved += 1
+									movedCount += 1
+								)
+							)
+						)
+					)
+
+					if localMoved > 0 then
+					(
+						updateShape obj
+						objCount += 1
+					)
+					else
+					(
+						skipCount += 1
+					)
+				)
+				else
+				(
+					skipCount += 1
+				)
+			)
+		)
+
+		updateSelInfo()
+		if movedCount > 0 then
+			updateInfo ("吸附完成：对象 " + objCount as string + "，点 " + movedCount as string)
+		else
+			updateInfo ("未检测到已选中的样条点（跳过 " + skipCount as string + "）")
+	)
+
 	on btnExtrude pressed do
 	(
 		if selection.count == 0 then
@@ -1042,24 +1479,56 @@ rollout rolFixBlackFace "样条流程工具箱 v3.5.4" width:340 height:885
 			return undefined
 		)
 
+		local doOptimize = chkExtrudeProOptimize.checked
+		local targetPercent = spnExtrudeProPercent.value as float
+		local doCap = chkExtrudeCap.checked
 		local count = 0
+		local optimizeCount = 0
+		local optimizeFail = 0
 		undo "一键挤出" on
 		(
 			for obj in selection do
 			(
 				if superClassOf obj == Shape then
 				(
-					addModifier obj (Extrude amount:spnExtrude.value)
+					addModifier obj (Extrude amount:spnExtrude.value capStart:doCap capEnd:doCap)
 					count += 1
+
+					if doOptimize then
+					(
+						try
+						(
+							convertToPoly obj
+							local po = ProOptimizer()
+							addModifier obj po
+							po.Calculate = true
+							po.VertexPercent = targetPercent
+							optimizeCount += 1
+						)
+						catch
+						(
+							optimizeFail += 1
+						)
+					)
 				)
 			)
 		)
 
 		updateSelInfo()
 		if count > 0 then
-			updateInfo ("一键挤出完成：共 " + count as string + " 个")
+		(
+			if doOptimize then
+				updateInfo ("一键挤出完成：共 " + count as string + " 个，ProOptimize " + optimizeCount as string + " 个" + (if optimizeFail > 0 then ("，失败 " + optimizeFail as string + " 个") else ""))
+			else
+				updateInfo ("一键挤出完成：共 " + count as string + " 个")
+		)
 		else
 			updateInfo "未找到样条线对象"
+	)
+
+	on chkExtrudeProOptimize changed state do
+	(
+		spnExtrudeProPercent.enabled = state
 	)
 
 	on btnShell pressed do
@@ -1070,6 +1539,14 @@ rollout rolFixBlackFace "样条流程工具箱 v3.5.4" width:340 height:885
 			return undefined
 		)
 
+		local outerVal = spnShellOuter.value
+		local innerVal = spnShellInner.value
+		if (abs outerVal < 0.000001) and (abs innerVal < 0.000001) then
+		(
+			messageBox "内壳和外壳厚度不能同时为 0。" title:"提示"
+			return undefined
+		)
+
 		local count = 0
 		undo "一键加壳" on
 		(
@@ -1077,7 +1554,7 @@ rollout rolFixBlackFace "样条流程工具箱 v3.5.4" width:340 height:885
 			(
 				if (superClassOf obj == GeometryClass) or (superClassOf obj == Shape) then
 				(
-					addModifier obj (Shell outerAmount:spnShell.value innerAmount:0)
+					addModifier obj (Shell outerAmount:outerVal innerAmount:innerVal)
 					count += 1
 				)
 			)
@@ -1141,6 +1618,206 @@ rollout rolFixBlackFace "样条流程工具箱 v3.5.4" width:340 height:885
 		mergeMaxFile copyFile #select
 		updateSelInfo()
 		updateInfo "粘贴完成：已合并并选中物体"
+	)
+
+	on btnAlignRotAxis pressed do
+	(
+		if selection.count == 0 then
+		(
+			messageBox "请先选中至少一个物体！" title:"提示"
+			return undefined
+		)
+
+		local useX = chkRotUseX.checked
+		local useY = chkRotUseY.checked
+		local useZ = chkRotUseZ.checked
+		if (not useX) and (not useY) and (not useZ) then
+		(
+			messageBox "请至少启用一个旋转轴（X/Y/Z）。" title:"提示"
+			return undefined
+		)
+
+		local doneCount = 0
+		local skipCount = 0
+
+		undo "旋转靠齐轴" on
+		(
+			for obj in selection do
+			(
+				if isValidNode obj then
+				(
+					try
+					(
+						alignNodeRotationByAxes obj useX useY useZ spnRotX.value spnRotY.value spnRotZ.value
+						doneCount += 1
+					)
+					catch
+					(
+						skipCount += 1
+					)
+				)
+				else
+				(
+					skipCount += 1
+				)
+			)
+		)
+
+		updateSelInfo()
+		updateInfo ("旋转靠齐完成：" + doneCount as string + " 个" + (if skipCount > 0 then ("，跳过 " + skipCount as string + " 个") else ""))
+	)
+
+	on chkMatCustomName changed state do
+	(
+		edtMatCustomName.enabled = state
+	)
+
+	on btnUnifyMat pressed do
+	(
+		if selection.count == 0 then
+		(
+			messageBox "请先选中至少一个几何体对象！" title:"提示"
+			return undefined
+		)
+
+		local targets = getSelectedGeometryTargets()
+		if targets.count == 0 then
+		(
+			messageBox "当前选择中没有几何体对象（Geometry）。" title:"提示"
+			return undefined
+		)
+
+		local customMatName = ""
+		if chkMatCustomName.checked then
+		(
+			customMatName = edtMatCustomName.text
+			if (customMatName == undefined) or (customMatName == "") then
+			(
+				messageBox "已勾选自定义命名，请先输入材质名称。" title:"提示"
+				return undefined
+			)
+		)
+
+		local tagMat = createUniqueTagMaterial customName:customMatName
+		if tagMat == undefined then
+		(
+			messageBox "创建独立材质失败，请重试。" title:"提示"
+			return undefined
+		)
+
+		local okCount = 0
+		local failCount = 0
+		splineToolboxMatBackup = #()
+
+		undo "统一材质" on
+		(
+			for obj in targets do
+			(
+				try
+				(
+					append splineToolboxMatBackup #(obj, obj.material)
+					obj.material = tagMat
+					okCount += 1
+				)
+				catch
+				(
+					failCount += 1
+				)
+			)
+		)
+
+		select targets
+		updateSelInfo()
+		if okCount > 0 then
+			updateInfo ("统一材质完成：" + okCount as string + " 个 -> " + tagMat.name + (if failCount > 0 then ("，失败 " + failCount as string + " 个") else ""))
+		else
+			updateInfo "统一材质失败：未成功赋予材质"
+	)
+
+	on btnRestoreMat pressed do
+	(
+		if (splineToolboxMatBackup == undefined) or (splineToolboxMatBackup.count == 0) then
+		(
+			messageBox "没有可还原的记录，请先执行一次「统一材质」。" title:"提示"
+			return undefined
+		)
+
+		local restoreCount = 0
+		local skipCount = 0
+		local restoredNodes = #()
+
+		undo "还原材质" on
+		(
+			for item in splineToolboxMatBackup do
+			(
+				local obj = item[1]
+				local oldMat = item[2]
+				if isValidNode obj then
+				(
+					try
+					(
+						obj.material = oldMat
+						append restoredNodes obj
+						restoreCount += 1
+					)
+					catch
+					(
+						skipCount += 1
+					)
+				)
+				else
+				(
+					skipCount += 1
+				)
+			)
+		)
+
+		splineToolboxMatBackup = #()
+		if restoredNodes.count > 0 then select restoredNodes
+		updateSelInfo()
+		updateInfo ("还原材质完成：" + restoreCount as string + " 个" + (if skipCount > 0 then ("，跳过 " + skipCount as string + " 个") else ""))
+	)
+
+	on btnSelectSameMat pressed do
+	(
+		if selection.count == 0 then
+		(
+			messageBox "请先选择一个带材质的几何体对象！" title:"提示"
+			return undefined
+		)
+
+		local seed = selection[1]
+		if (not isValidNode seed) or (superClassOf seed != GeometryClass) then
+		(
+			messageBox "请先选中一个几何体对象（Geometry）。" title:"提示"
+			return undefined
+		)
+
+		local refMat = seed.material
+		if refMat == undefined then
+		(
+			messageBox "当前对象没有材质，无法按材质筛选。" title:"提示"
+			return undefined
+		)
+
+		local sameMatObjs = #()
+		for obj in objects do
+		(
+			if isValidNode obj and (superClassOf obj == GeometryClass) and (obj.material == refMat) then
+				append sameMatObjs obj
+		)
+
+		if sameMatObjs.count > 0 then
+		(
+			select sameMatObjs
+			updateSelInfo()
+			updateInfo ("已选中同材质对象：" + sameMatObjs.count as string + " 个（" + refMat.name + "）")
+		)
+		else
+		(
+			updateSelInfo()
+			updateInfo "未找到同材质的几何体对象"
+		)
 	)
 
 	on btnFreezeSel pressed do
@@ -1232,11 +1909,6 @@ rollout rolFixBlackFace "样条流程工具箱 v3.5.4" width:340 height:885
 		reloadToolSelf()
 	)
 
-	on tmrClock tick do
-	(
-		updateClock()
-	)
-
 	on rolFixBlackFace open do
 	(
 		local savedPos = loadToolboxDialogPos()
@@ -1245,20 +1917,13 @@ rollout rolFixBlackFace "样条流程工具箱 v3.5.4" width:340 height:885
 			try(setDialogPos rolFixBlackFace savedPos) catch()
 		)
 
-		try(dnClock.textAlign = (dotNetClass "System.Drawing.ContentAlignment").MiddleCenter) catch()
-		try(dnClock.font = dotNetObject "System.Drawing.Font" "Microsoft YaHei UI" 20.0 ((dotNetClass "System.Drawing.FontStyle").Bold)) catch()
-
 		updateSelInfo()
-		updateClock()
-		tmrClock.active = true
 		updateInfo "就绪 - 请选择对象后执行功能"
 		callbacks.addScript #selectionSetChanged "if rolFixBlackFace != undefined do rolFixBlackFace.updateSelInfo()" id:#fixBlackFaceSelChanged
 	)
 
 	on rolFixBlackFace close do
 	(
-		tmrClock.active = false
-
 		local dlgPos = undefined
 		try(dlgPos = getDialogPos rolFixBlackFace) catch(dlgPos = undefined)
 		if dlgPos != undefined do saveToolboxDialogPos dlgPos

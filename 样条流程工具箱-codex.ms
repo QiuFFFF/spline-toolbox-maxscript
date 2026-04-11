@@ -75,7 +75,7 @@ rollout rolFixBlackFace "样条流程工具箱 v3.6.26" width:700 height:900
 	local Y_L_MAINT = Y_L_FREEZE + 100
 	local Y_R_VOLUME = 10
 		local Y_R_PIVOT = Y_R_VOLUME + 316
-	local Y_R_ROT = Y_R_PIVOT + 100
+	local Y_R_ROT = Y_R_PIVOT + 140
 	local Y_R_MAT = Y_R_ROT + 216
 
 	local TOP_KEY_W = 58
@@ -125,8 +125,9 @@ rollout rolFixBlackFace "样条流程工具箱 v3.6.26" width:700 height:900
 
 	label lbSecPivot "轴心与复制" pos:[R_X,Y_R_PIVOT] align:#left width:R_W
 	button btnCenterPivot "重置轴-仅影响轴-居中到对象" pos:[R_X,Y_R_PIVOT+20] width:R_W height:BTN_H toolTip:"将当前选中物体的轴心居中到对象"
-	button btnCopyNodes "复制" pos:[R_X,Y_R_PIVOT+56] width:HALF_W height:BTN_H
-	button btnPasteNodes "粘贴" pos:[R_X2,Y_R_PIVOT+56] width:HALF_W height:BTN_H
+	button btnMoveToWorldZero "归零到世界0(底贴地)" pos:[R_X,Y_R_PIVOT+56] width:R_W height:BTN_H toolTip:"单选：轴心X/Y归零，最低点Z归零；多选：整组包围盒中心X/Y归零，整组最低点Z归零"
+	button btnCopyNodes "复制" pos:[R_X,Y_R_PIVOT+92] width:HALF_W height:BTN_H
+	button btnPasteNodes "粘贴" pos:[R_X2,Y_R_PIVOT+92] width:HALF_W height:BTN_H
 
 	label lbSecAlignRot "旋转" pos:[R_X,Y_R_ROT] align:#left width:R_W
 	checkbox chkRotUseX "启用X" pos:[R_X,Y_R_ROT+20] checked:false
@@ -342,6 +343,86 @@ rollout rolFixBlackFace "样条流程工具箱 v3.6.26" width:700 height:900
 	fn getSelectedGeometryTargets =
 	(
 		for obj in selection where isValidNode obj and (superClassOf obj == GeometryClass) collect obj
+	)
+
+	fn getNodeWorldBounds obj =
+	(
+		if (obj == undefined) or (not isValidNode obj) then return undefined
+
+		local bbMin = undefined
+		local bbMax = undefined
+		try
+		(
+			in coordsys world
+			(
+				bbMin = obj.min
+				bbMax = obj.max
+			)
+		)
+		catch
+		(
+			local bb = undefined
+			try(bb = nodeGetBoundingBox obj (matrix3 1)) catch(bb = undefined)
+			if (bb != undefined) and (classOf bb == Array) and (bb.count >= 2) then
+			(
+				bbMin = bb[1]
+				bbMax = bb[2]
+			)
+		)
+
+		if (bbMin == undefined) or (bbMax == undefined) then return undefined
+
+		#(bbMin, bbMax)
+	)
+
+	fn collectValidWorldBounds nodes =
+	(
+		local validItems = #()
+		local skipCount = 0
+
+		for obj in nodes do
+		(
+			if not isValidNode obj then
+			(
+				skipCount += 1
+				continue
+			)
+
+			local bb = getNodeWorldBounds obj
+			if bb == undefined then
+			(
+				skipCount += 1
+				continue
+			)
+
+			append validItems #(obj, bb[1], bb[2])
+		)
+
+		#(validItems, skipCount)
+	)
+
+	fn buildGroupWorldBounds boundItems =
+	(
+		if boundItems.count < 1 then return undefined
+
+		local groupMin = boundItems[1][2]
+		local groupMax = boundItems[1][3]
+
+		for i = 2 to boundItems.count do
+		(
+			local bbMin = boundItems[i][2]
+			local bbMax = boundItems[i][3]
+
+			if bbMin.x < groupMin.x do groupMin.x = bbMin.x
+			if bbMin.y < groupMin.y do groupMin.y = bbMin.y
+			if bbMin.z < groupMin.z do groupMin.z = bbMin.z
+
+			if bbMax.x > groupMax.x do groupMax.x = bbMax.x
+			if bbMax.y > groupMax.y do groupMax.y = bbMax.y
+			if bbMax.z > groupMax.z do groupMax.z = bbMax.z
+		)
+
+		#(groupMin, groupMax)
 	)
 
 	fn canAttachAsEditablePoly obj =
@@ -1720,6 +1801,79 @@ rollout rolFixBlackFace "样条流程工具箱 v3.6.26" width:700 height:900
 
 		updateSelInfo()
 		updateInfo ("已将 " + pivotCount as string + " 个物体的轴心居中")
+	)
+
+	on btnMoveToWorldZero pressed do
+	(
+		if selection.count == 0 then
+		(
+			messageBox "请先选中至少一个物体！" title:"提示"
+			return undefined
+		)
+
+		local collectResult = collectValidWorldBounds (selection as array)
+		local validItems = collectResult[1]
+		local skipCount = collectResult[2]
+		if validItems.count < 1 then
+		(
+			updateSelInfo()
+			updateInfo ("归零失败：未找到可参与计算的对象" + (if skipCount > 0 then ("，跳过 " + skipCount as string + " 个") else ""))
+			return undefined
+		)
+
+		local singleMode = (validItems.count == 1)
+		local moveOffset = [0,0,0]
+
+		if singleMode then
+		(
+			local obj = validItems[1][1]
+			local bbMin = validItems[1][2]
+			local objPos = [0,0,0]
+
+			try(in coordsys world (objPos = obj.pos)) catch(try(objPos = obj.pos) catch(objPos = [0,0,0]))
+			moveOffset = [-objPos.x, -objPos.y, -bbMin.z]
+		)
+		else
+		(
+			local groupBounds = buildGroupWorldBounds validItems
+			local groupMin = groupBounds[1]
+			local groupMax = groupBounds[2]
+			local groupCenter = [(groupMin.x + groupMax.x) * 0.5, (groupMin.y + groupMax.y) * 0.5, (groupMin.z + groupMax.z) * 0.5]
+			moveOffset = [-groupCenter.x, -groupCenter.y, -groupMin.z]
+		)
+
+		local movedCount = 0
+		local failCount = 0
+
+		undo "归零到世界0(底贴地)" on
+		(
+			for item in validItems do
+			(
+				local obj = item[1]
+				if isValidNode obj then
+				(
+					try
+					(
+						in coordsys world (obj.pos = obj.pos + moveOffset)
+						movedCount += 1
+					)
+					catch
+					(
+						failCount += 1
+					)
+				)
+				else
+				(
+					failCount += 1
+				)
+			)
+		)
+
+		updateSelInfo()
+		if movedCount > 0 then
+			updateInfo ("归零完成：" + (if singleMode then ("单体 " + movedCount as string + " 个") else ("整组 " + movedCount as string + " 个")) + (if skipCount > 0 then ("，跳过 " + skipCount as string + " 个") else "") + (if failCount > 0 then ("，失败 " + failCount as string + " 个") else ""))
+		else
+			updateInfo ("归零失败：未成功移动对象" + (if skipCount > 0 then ("，跳过 " + skipCount as string + " 个") else "") + (if failCount > 0 then ("，失败 " + failCount as string + " 个") else ""))
 	)
 
 	on btnCopyNodes pressed do

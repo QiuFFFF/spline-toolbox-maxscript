@@ -1,7 +1,7 @@
 /*
-		样条流程工具箱 v3.6.26
+		样条流程工具箱 v3.6.28
 	适用于 3ds Max 2024 中文版
-		功能：稳定描摹 / 批量附加(样条+Editable Poly) / 炸开到对象 / 分离到对象 / 一键挤出(可封口) / 挤出后ProOptimize / 一键加壳(内外厚度) / 沿样条挤出(封闭截面+开放路径) / 轴心居中 / 复制粘贴 / 材质批处理(材质统一+对象命名+颜色) / 旋转(正反转) / 默认紧凑布局
+		功能：稳定描摹 / 批量附加(样条+Editable Poly) / 炸开到对象 / 分离到对象 / 交点加点 / 一键挤出(可封口) / 挤出后ProOptimize / 一键加壳(内外厚度) / 沿样条挤出(封闭截面+开放路径) / 轴心居中 / 复制粘贴 / 材质批处理(材质统一+对象命名+颜色) / 旋转(正反转) / 默认紧凑布局
 
 	安装方法：
 	1. 将此文件拖入 3ds Max 视口即可运行
@@ -50,7 +50,7 @@ fn saveToolboxDialogPos p =
 	true
 )
 
-rollout rolFixBlackFace "样条流程工具箱 v3.6.26" width:700 height:900
+rollout rolFixBlackFace "样条流程工具箱 v3.6.28" width:700 height:900
 (
 	local L_X = 16
 	local L_W = 320
@@ -70,7 +70,7 @@ rollout rolFixBlackFace "样条流程工具箱 v3.6.26" width:700 height:900
 	local Y_TOP = 10
 	local Y_L_TRACE = 138
 	local Y_L_SPLINE = Y_L_TRACE + 138
-	local Y_L_SIMPLIFY = Y_L_SPLINE + 134
+	local Y_L_SIMPLIFY = Y_L_SPLINE + 170
 	local Y_L_FREEZE = Y_L_SIMPLIFY + 134
 	local Y_L_MAINT = Y_L_FREEZE + 100
 	local Y_R_VOLUME = 10
@@ -105,6 +105,7 @@ rollout rolFixBlackFace "样条流程工具箱 v3.6.26" width:700 height:900
 	button btnAttach "批量附加(样条/Poly)" pos:[L_X,Y_L_SPLINE+20] width:L_W height:BTN_H toolTip:"将多个样条线合并为一个对象，或将多个几何体转为 Editable Poly 后附加为一个对象"
 	button btnExplode "炸开到对象" pos:[L_X,Y_L_SPLINE+56] width:L_W height:BTN_H toolTip:"将每条子样条线分离为独立对象"
 	button btnDetachToObj "分离到对象" pos:[L_X,Y_L_SPLINE+92] width:L_W height:BTN_H toolTip:"将几何体按元素分离为独立对象"
+	button btnAddIntersectionKnot "交点加点(选两条线)" pos:[L_X,Y_L_SPLINE+128] width:L_W height:BTN_H toolTip:"选择两个样条对象，自动在直线段交点处给双方加点"
 
 	label lbSecSimplify "点数优化" pos:[L_X,Y_L_SIMPLIFY] align:#left width:L_W
 	spinner spnSimplifyTol "偏差容差(mm): " pos:[L_X,Y_L_SIMPLIFY+20] range:[0.001,10000,1.0] type:#float width:L_SPN_W fieldwidth:L_SPN_FW align:#left
@@ -425,6 +426,173 @@ rollout rolFixBlackFace "样条流程工具箱 v3.6.26" width:700 height:900
 		#(groupMin, groupMax)
 	)
 
+	fn cross2D a b =
+	(
+		(a.x * b.y) - (a.y * b.x)
+	)
+
+	fn lineSegmentIntersectionXY p1 p2 q1 q2 epsilon:0.0001 =
+	(
+		local r = p2 - p1
+		local s = q2 - q1
+		local denom = cross2D r s
+		if abs denom <= epsilon then return undefined
+
+		local qp = q1 - p1
+		local t = (cross2D qp s) / denom
+		local u = (cross2D qp r) / denom
+		if (t < -epsilon) or (t > (1.0 + epsilon)) or (u < -epsilon) or (u > (1.0 + epsilon)) then return undefined
+
+		local hitA = p1 + r * t
+		local hitB = q1 + s * u
+		local hit = (hitA + hitB) * 0.5
+		#(hit, t, u)
+	)
+
+	fn collectLinearSplineSegmentsWorld shpNode =
+	(
+		local segs = #()
+		if (shpNode == undefined) or (not isValidNode shpNode) then return segs
+		if superClassOf shpNode != Shape then return segs
+
+		local splineCount = 0
+		try(splineCount = numSplines shpNode) catch(splineCount = 0)
+		for s = 1 to splineCount do
+		(
+			local knotCount = 0
+			try(knotCount = numKnots shpNode s) catch(knotCount = 0)
+			if knotCount < 2 then continue
+
+			local closedSp = false
+			try(closedSp = isClosed shpNode s) catch(closedSp = false)
+			local segCount = if closedSp then knotCount else (knotCount - 1)
+			if segCount < 1 then continue
+
+			for segIdx = 1 to segCount do
+			(
+				local segType = #line
+				try(segType = getSegType shpNode s segIdx) catch(segType = #line)
+				if segType != #line then continue
+
+				local k1 = segIdx
+				local k2 = if segIdx < knotCount then (segIdx + 1) else 1
+				local p1 = [0,0,0]
+				local p2 = [0,0,0]
+				try(in coordsys world (p1 = getKnotPoint shpNode s k1; p2 = getKnotPoint shpNode s k2)) catch()
+				append segs #(s, segIdx, k1, k2, p1, p2, closedSp)
+			)
+		)
+		segs
+	)
+
+	fn hasWorldKnotNear shpNode splineIndex worldPt tol =
+	(
+		local knotCount = 0
+		try(knotCount = numKnots shpNode splineIndex) catch(knotCount = 0)
+		for k = 1 to knotCount do
+		(
+			local kp = [0,0,0]
+			try(in coordsys world (kp = getKnotPoint shpNode splineIndex k)) catch()
+			if (distance kp worldPt) <= tol then return true
+		)
+		false
+	)
+
+	fn hasInsertRequestNear requests splineIndex worldPt tol =
+	(
+		for req in requests do
+		(
+			if (req[1] == splineIndex) and ((distance req[4] worldPt) <= tol) then return true
+		)
+		false
+	)
+
+	fn sortInsertRequests requests =
+	(
+		local cnt = requests.count
+		if cnt < 2 then return requests
+
+		for i = 1 to (cnt - 1) do
+		(
+			for j = (i + 1) to cnt do
+			(
+				local a = requests[i]
+				local b = requests[j]
+				local swapNeeded = false
+
+				if b[1] > a[1] then
+					swapNeeded = true
+				else if (b[1] == a[1]) and (b[2] > a[2]) then
+					swapNeeded = true
+				else if (b[1] == a[1]) and (b[2] == a[2]) and (b[3] > a[3]) then
+					swapNeeded = true
+
+				if swapNeeded then
+				(
+					local tmp = requests[i]
+					requests[i] = requests[j]
+					requests[j] = tmp
+				)
+			)
+		)
+
+		requests
+	)
+
+	fn buildSplineInsertRequests shpNode ownSegs otherSegs tol =
+	(
+		local requests = #()
+		for seg in ownSegs do
+		(
+			local splineIndex = seg[1]
+			local segIndex = seg[2]
+			local endKnot = seg[4]
+			local p1 = seg[5]
+			local p2 = seg[6]
+
+			for otherSeg in otherSegs do
+			(
+				local q1 = otherSeg[5]
+				local q2 = otherSeg[6]
+				local hit = lineSegmentIntersectionXY p1 p2 q1 q2 epsilon:tol
+				if hit == undefined then continue
+
+				local hitPt = hit[1]
+				local tVal = hit[2]
+				if hasWorldKnotNear shpNode splineIndex hitPt tol then continue
+				if hasInsertRequestNear requests splineIndex hitPt tol then continue
+
+				append requests #(splineIndex, segIndex, tVal, hitPt, endKnot)
+			)
+		)
+		sortInsertRequests requests
+	)
+
+	fn applySplineInsertRequests shpNode requests =
+	(
+		local addCount = 0
+		local failCount = 0
+		for req in requests do
+		(
+			local splineIndex = req[1]
+			local hitPt = req[4]
+			local whereIdx = req[5]
+
+			try
+			(
+				in coordsys world (addKnot shpNode splineIndex #corner #line hitPt whereIdx)
+				addCount += 1
+			)
+			catch
+			(
+				failCount += 1
+			)
+		)
+
+		if requests.count > 0 do try(updateShape shpNode) catch()
+		#(addCount, failCount)
+	)
+
 	fn canAttachAsEditablePoly obj =
 	(
 		if (obj == undefined) or (not isValidNode obj) then return false
@@ -531,7 +699,16 @@ rollout rolFixBlackFace "样条流程工具箱 v3.6.26" width:700 height:900
 		#(renamedCount, failCount)
 	)
 
-		fn rotateNodeByAxes obj useX useY useZ xVal yVal zVal =
+	fn rotatePointByAxes pt useX useY useZ xVal yVal zVal =
+	(
+		local p = pt
+		if useX then p = p * (rotateXMatrix xVal)
+		if useY then p = p * (rotateYMatrix yVal)
+		if useZ then p = p * (rotateZMatrix zVal)
+		p
+	)
+
+	fn rotateNodeByAxes obj useX useY useZ xVal yVal zVal =
 		(
 			in coordsys world
 			(
@@ -541,6 +718,55 @@ rollout rolFixBlackFace "样条流程工具箱 v3.6.26" width:700 height:900
 			)
 			true
 		)
+
+	fn rotateNodesByGroupCenter nodes useX useY useZ xVal yVal zVal =
+	(
+		local collectResult = collectValidWorldBounds nodes
+		local validItems = collectResult[1]
+		local skipCount = collectResult[2]
+		if validItems.count < 1 then return #(0, skipCount, 0)
+
+		local groupBounds = buildGroupWorldBounds validItems
+		if groupBounds == undefined then return #(0, skipCount, 0)
+
+		local groupMin = groupBounds[1]
+		local groupMax = groupBounds[2]
+		local groupCenter = [(groupMin.x + groupMax.x) * 0.5, (groupMin.y + groupMax.y) * 0.5, (groupMin.z + groupMax.z) * 0.5]
+
+		local doneCount = 0
+		local failCount = 0
+		for item in validItems do
+		(
+			local obj = item[1]
+			if isValidNode obj then
+			(
+				try
+				(
+					in coordsys world
+					(
+						local oldPos = obj.pos
+						local relPos = oldPos - groupCenter
+						local newPos = groupCenter + (rotatePointByAxes relPos useX useY useZ xVal yVal zVal)
+						obj.pos = newPos
+						if useX then rotate obj (angleaxis xVal [1,0,0])
+						if useY then rotate obj (angleaxis yVal [0,1,0])
+						if useZ then rotate obj (angleaxis zVal [0,0,1])
+					)
+					doneCount += 1
+				)
+				catch
+				(
+					failCount += 1
+				)
+			)
+			else
+			(
+				failCount += 1
+			)
+		)
+
+		#(doneCount, skipCount, failCount)
+	)
 
 		fn shapeHasClosedSpline shpNode =
 		(
@@ -1509,6 +1735,60 @@ rollout rolFixBlackFace "样条流程工具箱 v3.6.26" width:700 height:900
 			updateInfo ("未找到可分离的几何体对象" + (if skipCount > 0 then ("（跳过 " + skipCount as string + "）") else ""))
 	)
 
+	on btnAddIntersectionKnot pressed do
+	(
+		if selection.count != 2 then
+		(
+			messageBox "请只选择 2 个样条对象。" title:"提示"
+			return undefined
+		)
+
+		local objA = selection[1]
+		local objB = selection[2]
+		if (not isValidNode objA) or (not isValidNode objB) or (superClassOf objA != Shape) or (superClassOf objB != Shape) then
+		(
+			messageBox "该功能仅支持 2 个样条对象。" title:"提示"
+			return undefined
+		)
+
+		local tol = 0.001
+		local segsA = #()
+		local segsB = #()
+		local reqA = #()
+		local reqB = #()
+		local addedA = 0
+		local addedB = 0
+		local failA = 0
+		local failB = 0
+
+		undo "交点加点" on
+		(
+			try(convertToSplineShape objA) catch()
+			try(convertToSplineShape objB) catch()
+
+			segsA = collectLinearSplineSegmentsWorld objA
+			segsB = collectLinearSplineSegmentsWorld objB
+			reqA = buildSplineInsertRequests objA segsA segsB tol
+			reqB = buildSplineInsertRequests objB segsB segsA tol
+
+			local resultA = applySplineInsertRequests objA reqA
+			local resultB = applySplineInsertRequests objB reqB
+			addedA = resultA[1]
+			failA = resultA[2]
+			addedB = resultB[1]
+			failB = resultB[2]
+		)
+
+		updateSelInfo()
+		local totalHits = if reqA.count > reqB.count then reqA.count else reqB.count
+		local totalAdded = addedA + addedB
+		local totalFail = failA + failB
+		if totalAdded > 0 then
+			updateInfo ("交点加点完成：交点 " + totalHits as string + " 处，A新增 " + addedA as string + "，B新增 " + addedB as string + (if totalFail > 0 then ("，失败 " + totalFail as string + " 个") else ""))
+		else
+			updateInfo "未找到可加点的直线段交点"
+	)
+
 	on btnSimplify pressed do
 	(
 		if selection.count == 0 then
@@ -1940,37 +2220,23 @@ rollout rolFixBlackFace "样条流程工具箱 v3.6.26" width:700 height:900
 			return undefined
 		)
 
-		local doneCount = 0
-		local skipCount = 0
 		local rx = xVal * signVal
 		local ry = yVal * signVal
 		local rz = zVal * signVal
+		local doneCount = 0
+		local skipCount = 0
+		local failCount = 0
 
 		undo actionName on
 		(
-			for obj in selection do
-			(
-				if isValidNode obj then
-				(
-					try
-					(
-						rotateNodeByAxes obj useX useY useZ rx ry rz
-						doneCount += 1
-					)
-					catch
-					(
-						skipCount += 1
-					)
-				)
-				else
-				(
-					skipCount += 1
-				)
-			)
+			local rotateResult = rotateNodesByGroupCenter (selection as array) useX useY useZ rx ry rz
+			doneCount = rotateResult[1]
+			skipCount = rotateResult[2]
+			failCount = rotateResult[3]
 		)
 
 		updateSelInfo()
-		updateInfo (actionName + "完成：" + doneCount as string + " 个" + (if skipCount > 0 then ("，跳过 " + skipCount as string + " 个") else ""))
+		updateInfo (actionName + "完成：整体旋转 " + doneCount as string + " 个" + (if skipCount > 0 then ("，跳过 " + skipCount as string + " 个") else "") + (if failCount > 0 then ("，失败 " + failCount as string + " 个") else ""))
 	)
 
 	on btnRotatePos pressed do
